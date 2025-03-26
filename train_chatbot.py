@@ -1,87 +1,102 @@
 import nltk
-from nltk.stem import WordNetLemmatizer
 import json
 import pickle
-import numpy as np
 import random
-from keras.models import Sequential
-from keras.layers import Dense, Dropout
-from keras.optimizers import SGD
+import numpy as np
+from nltk.stem import WordNetLemmatizer
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Dense, Dropout
+from tensorflow.keras.optimizers import SGD
 
-# Initialize lemmatizer and required lists
-lemmatizer = WordNetLemmatizer()
-words = []
-classes = []
-documents = []
-ignore_words = ['?', '!', '.', ',']
+# Download NLTK data if not already available
+nltk.download('punkt')
+nltk.download('wordnet')
 
-# Load and parse intents file
-with open('intents.json') as file:
-    intents = json.load(file)
+def preprocess_intents(file_path):
+    lemmatizer = WordNetLemmatizer()
+    words, classes, documents = [], [], []
+    ignore_words = ['?', '!', '.', ',']
 
-# Tokenize, lemmatize, and collect words, classes, and documents
-for intent in intents['intents']:
-    for pattern in intent['patterns']:
-        tokenized_words = nltk.word_tokenize(pattern)
-        words.extend(tokenized_words)
-        documents.append((tokenized_words, intent['tag']))
+    # Load intents JSON file
+    with open(file_path, 'r') as f:
+        intents = json.load(f)
 
-        if intent['tag'] not in classes:
-            classes.append(intent['tag'])
+    for intent in intents['intents']:
+        for pattern in intent['patterns']:
+            tokenized_words = nltk.word_tokenize(pattern)
+            words.extend(tokenized_words)
+            documents.append((tokenized_words, intent['tag']))
+            if intent['tag'] not in classes:
+                classes.append(intent['tag'])
 
-# Clean up and sort words and classes
-words = sorted(set([lemmatizer.lemmatize(w.lower()) for w in words if w not in ignore_words]))
-classes = sorted(set(classes))
+    # Lemmatize and sort
+    words = sorted(set([lemmatizer.lemmatize(w.lower()) for w in words if w not in ignore_words]))
+    classes = sorted(set(classes))
 
-print(f"{len(documents)} documents")
-print(f"{len(classes)} classes: {classes}")
-print(f"{len(words)} unique lemmatized words")
+    # Save processed words and classes
+    pickle.dump(words, open('words.pkl', 'wb'))
+    pickle.dump(classes, open('classes.pkl', 'wb'))
 
-# Save words and classes
-pickle.dump(words, open('words.pkl', 'wb'))
-pickle.dump(classes, open('classes.pkl', 'wb'))
+    return words, classes, documents
 
-# Create training data (Bag of Words + One-hot encoded labels)
-training_data = []
-output_empty = [0] * len(classes)
+def create_training_data(words, classes, documents):
+    lemmatizer = WordNetLemmatizer()
+    training_data = []
+    output_empty = [0] * len(classes)
 
-for doc_words, tag in documents:
-    lemmatized_words = [lemmatizer.lemmatize(word.lower()) for word in doc_words]
-    bag = [1 if word in lemmatized_words else 0 for word in words]
-    
-    output_row = list(output_empty)
-    output_row[classes.index(tag)] = 1
-    
-    training_data.append((bag, output_row))
+    for doc_words, tag in documents:
+        lemmatized_words = [lemmatizer.lemmatize(w.lower()) for w in doc_words]
+        bag = [1 if w in lemmatized_words else 0 for w in words]
 
-# Shuffle and convert to NumPy arrays
-random.shuffle(training_data)
-training_data = np.array(training_data, dtype=object)
+        output_row = list(output_empty)
+        output_row[classes.index(tag)] = 1
 
-train_x = np.array(list(training_data[:, 0]))
-train_y = np.array(list(training_data[:, 1]))
+        training_data.append((bag, output_row))
 
-print("Training data created")
+    # Shuffle and convert to NumPy arrays
+    random.shuffle(training_data)
+    training_data = np.array(training_data, dtype=object)
 
-# Build the model
-model = Sequential([
-    Dense(128, input_shape=(len(train_x[0]),), activation='relu'),
-    Dropout(0.5),
-    Dense(64, activation='relu'),
-    Dropout(0.5),
-    Dense(len(train_y[0]), activation='softmax')
-])
+    train_x = np.array(list(training_data[:, 0]))
+    train_y = np.array(list(training_data[:, 1]))
+    return train_x, train_y
 
-# Compile the model
-optimizer = SGD(learning_rate=0.01, decay=1e-6, momentum=0.9, nesterov=True)
-model.compile(loss='categorical_crossentropy', optimizer=optimizer, metrics=['accuracy'])
+def build_model(input_shape, output_shape):
+    model = Sequential([
+        Dense(128, input_shape=(input_shape,), activation='relu'),
+        Dropout(0.5),
+        Dense(64, activation='relu'),
+        Dropout(0.5),
+        Dense(output_shape, activation='softmax')
+    ])
 
-# Train the model
-history = model.fit(train_x, train_y, epochs=200, batch_size=5, verbose=1)
+    # Use SGD optimizer
+    optimizer = SGD(learning_rate=0.01, momentum=0.9, nesterov=True)
+    model.compile(loss='categorical_crossentropy', optimizer=optimizer, metrics=['accuracy'])
 
-# Save the trained model and training history
-model.save('chatbot_model.h5')
-with open("training_history.pkl", "wb") as f:
-    pickle.dump(history.history, f)
+    return model
 
-print("Model training complete and saved.")
+def main():
+    print("Preprocessing intents...")
+    words, classes, documents = preprocess_intents('intents.json')
+
+    print(f"{len(documents)} documents")
+    print(f"{len(classes)} classes: {classes}")
+    print(f"{len(words)} unique lemmatized words")
+
+    print("Creating training data...")
+    train_x, train_y = create_training_data(words, classes, documents)
+
+    print("Building and training model...")
+    model = build_model(len(train_x[0]), len(train_y[0]))
+    history = model.fit(train_x, train_y, epochs=200, batch_size=5, verbose=1)
+
+    # Save model and training history
+    model.save('chatbot_model.h5')
+    with open("training_history.pkl", "wb") as f:
+        pickle.dump(history.history, f)
+
+    print("Model training complete and saved.")
+
+if __name__ == "__main__":
+    main()
